@@ -8,6 +8,7 @@ public class Node {
     private String nodeName;
     private DatagramSocket socket;
     private HashMap<String, String> keyValueStore = new HashMap<>();
+    private HashMap<String, String> peerStore = new HashMap<>();
     private final int FORWARD_MIN_PORT = 20110;
     private final int FORWARD_MAX_PORT = 20129;
     private final Random rand = new Random();
@@ -33,14 +34,20 @@ public class Node {
             String input = new String(packet.getData(), 0, packet.getLength()).trim();
             System.out.println("\n📥 [RECEIVED] " + input);
 
-            // Message must begin with BB and contain exactly 7 tokens
-            String[] tokens = input.split(" ");
-            if (tokens.length != 7 || !tokens[0].equals("BB")) {
+            // Skip clearly invalid formats
+            if (!input.startsWith("BB")) {
                 System.out.println("❌ [SKIP] Not a CRN-formatted message.");
                 continue;
             }
 
+            String[] tokens = input.split(" ");
+            if (tokens.length != 7) {
+                System.out.println("❌ [ERROR] Invalid CRN message format.");
+                continue;
+            }
+
             try {
+                String magic = tokens[0];
                 String type = tokens[1];
                 int ttl = Integer.parseInt(tokens[2]);
                 String sender = tokens[3];
@@ -48,62 +55,78 @@ public class Node {
                 String ip = tokens[5];
                 int port = Integer.parseInt(tokens[6]);
 
+                if (!magic.equals("BB")) {
+                    System.out.println("❌ [ERROR] Invalid magic header.");
+                    continue;
+                }
+
                 if (ttl <= 0) {
                     System.out.println("⏱️ [DROP] TTL expired for message from " + sender);
                     continue;
                 }
 
-                switch (type) {
-                    case "W":
-                        String key = sender.split(":")[1] + "-" + hops;
-                        String value = "D:" + key;
-                        write(key, value);
-                        System.out.println("✅ [STORE] " + key + " = " + value);
+                if (type.equals("W")) {
+                    String key = sender.split(":")[1] + "-" + hops;
+                    String value = "D:" + key;
+                    write(key, value);
+                    System.out.println("✅ [STORE] " + key + " = " + value);
 
-                        // Send back a B reply
-                        String reply = String.join(" ", "BB", "B", "0", nodeName, "0", "127.0.0.1", Integer.toString(socket.getLocalPort()));
-                        DatagramPacket response = new DatagramPacket(
-                                reply.getBytes(), reply.length(), InetAddress.getByName(ip), port
+                    // Send B reply
+                    String backMessage = String.join(" ",
+                            "BB", "B", "0", nodeName, "0", "127.0.0.1", Integer.toString(socket.getLocalPort())
+                    );
+                    byte[] responseBytes = backMessage.getBytes();
+                    DatagramPacket response = new DatagramPacket(
+                            responseBytes,
+                            responseBytes.length,
+                            InetAddress.getByName(ip),
+                            port
+                    );
+                    socket.send(response);
+                    System.out.println("📩 [SENT] B message to " + sender + " (port " + port + ")");
+
+                    // Forward W message
+                    if (ttl > 1) {
+                        int forwardPort;
+                        do {
+                            forwardPort = FORWARD_MIN_PORT + rand.nextInt(FORWARD_MAX_PORT - FORWARD_MIN_PORT + 1);
+                        } while (forwardPort == socket.getLocalPort());
+
+                        String forwardMessage = String.join(" ",
+                                "BB", "W", Integer.toString(ttl - 1), sender, Integer.toString(hops + 1), "127.0.0.1", Integer.toString(port)
                         );
-                        socket.send(response);
-                        System.out.println("📩 [SENT] B message to " + sender + " (port " + port + ")");
+                        byte[] forwardBytes = forwardMessage.getBytes();
+                        DatagramPacket forwardPacket = new DatagramPacket(
+                                forwardBytes,
+                                forwardBytes.length,
+                                InetAddress.getByName("127.0.0.1"),
+                                forwardPort
+                        );
+                        socket.send(forwardPacket);
+                        System.out.println("🚀 [FORWARD] W message to port " + forwardPort);
+                    }
 
-                        // Forward W to a random other port
-                        if (ttl > 1) {
-                            int forwardPort;
-                            do {
-                                forwardPort = FORWARD_MIN_PORT + rand.nextInt(FORWARD_MAX_PORT - FORWARD_MIN_PORT + 1);
-                            } while (forwardPort == socket.getLocalPort());
+                } else if (type.equals("B")) {
+                    System.out.println("🔁 [RECEIVED] B message from " + sender);
 
-                            String forwardMsg = String.join(" ", "BB", "W",
-                                    Integer.toString(ttl - 1),
-                                    sender,
-                                    Integer.toString(hops + 1),
-                                    "127.0.0.1",
-                                    Integer.toString(port)
-                            );
+                } else if (type.equals("N")) {
+                    peerStore.put(sender, ip + ":" + port);
+                    System.out.println("📡 [NOTIFY] Stored peer " + sender + " at " + ip + ":" + port);
 
-                            DatagramPacket forwardPacket = new DatagramPacket(
-                                    forwardMsg.getBytes(), forwardMsg.length(), InetAddress.getByName("127.0.0.1"), forwardPort
-                            );
-                            socket.send(forwardPacket);
-                            System.out.println("🚀 [FORWARD] W message to port " + forwardPort);
-                        }
-                        break;
+                } else if (type.equals("K")) {
+                    System.out.println("💓 [KEEPALIVE] Ping from " + sender + " at " + ip + ":" + port);
 
-                    case "B":
-                        System.out.println("🔁 [RECEIVED] B message from " + sender);
-                        break;
-
-                    default:
-                        System.out.println("❓ [ERROR] Unknown message type: " + type);
+                } else {
+                    System.out.println("❓ [ERROR] Unknown message type: " + type);
                 }
+
+            } catch (NumberFormatException e) {
+                System.out.println("❌ [ERROR] Number format issue: " + e.getMessage());
             } catch (Exception e) {
-                System.out.println("❌ [ERROR] Failed to parse or handle message: " + e.getMessage());
+                System.out.println("❌ [ERROR] General error: " + e.getMessage());
             }
         }
 
-        // Final state of key-value store
         System.out.println("\n📦 [FINAL STORE CONTENTS]");
         if (keyValueStore.isEmpty()) {
             System.out.println("❌ No entries stored.");
