@@ -33,7 +33,6 @@ public class Node {
             String input = new String(packet.getData(), 0, packet.getLength()).trim();
             System.out.println("\n📥 [RECEIVED] " + input);
 
-            // Skip clearly invalid formats
             if (!input.startsWith("BB")) {
                 System.out.println("❌ [SKIP] Not a CRN-formatted message.");
                 continue;
@@ -70,21 +69,15 @@ public class Node {
                     write(key, value);
                     System.out.println("✅ [STORE] " + key + " = " + value);
 
-                    // Send B reply
                     String backMessage = String.join(" ",
-                            "BB", "B", "0", nodeName, "0", "127.0.0.1", Integer.toString(socket.getLocalPort())
-                    );
+                            "BB", "B", "0", nodeName, "0", "127.0.0.1", Integer.toString(socket.getLocalPort()));
                     byte[] responseBytes = backMessage.getBytes();
                     DatagramPacket response = new DatagramPacket(
-                            responseBytes,
-                            responseBytes.length,
-                            InetAddress.getByName(ip),
-                            port
-                    );
+                            responseBytes, responseBytes.length,
+                            InetAddress.getByName(ip), port);
                     socket.send(response);
                     System.out.println("📩 [SENT] B message to " + sender + " (port " + port + ")");
 
-                    // Forward W message to another random port
                     if (ttl > 1) {
                         int forwardPort;
                         do {
@@ -92,21 +85,39 @@ public class Node {
                         } while (forwardPort == socket.getLocalPort());
 
                         String forwardMessage = String.join(" ",
-                                "BB", "W", Integer.toString(ttl - 1), sender, Integer.toString(hops + 1), "127.0.0.1", Integer.toString(port)
-                        );
+                                "BB", "W", Integer.toString(ttl - 1), sender, Integer.toString(hops + 1), "127.0.0.1", Integer.toString(port));
                         byte[] forwardBytes = forwardMessage.getBytes();
                         DatagramPacket forwardPacket = new DatagramPacket(
-                                forwardBytes,
-                                forwardBytes.length,
-                                InetAddress.getByName("127.0.0.1"),
-                                forwardPort
-                        );
+                                forwardBytes, forwardBytes.length,
+                                InetAddress.getByName("127.0.0.1"), forwardPort);
                         socket.send(forwardPacket);
                         System.out.println("🚀 [FORWARD] W message to port " + forwardPort);
                     }
 
                 } else if (type.equals("B")) {
                     System.out.println("🔁 [RECEIVED] B message from " + sender);
+
+                } else if (type.equals("R")) {
+                    System.out.println("📖 [READ] Request from " + sender + " for key: " + sender);
+                    String value = read(sender);
+                    String response;
+
+                    if (value != null) {
+                        response = String.join(" ",
+                                "BB", "B", "0", nodeName, "0", "127.0.0.1", Integer.toString(socket.getLocalPort())) + " " + value;
+                        System.out.println("✅ [FOUND] Sending value: " + value);
+                    } else {
+                        response = String.join(" ",
+                                "BB", "B", "0", nodeName, "0", "127.0.0.1", Integer.toString(socket.getLocalPort())) + " KEY_NOT_FOUND";
+                        System.out.println("❌ [NOT FOUND] Key does not exist.");
+                    }
+
+                    byte[] responseBytes = response.getBytes();
+                    DatagramPacket responsePacket = new DatagramPacket(
+                            responseBytes, responseBytes.length,
+                            InetAddress.getByName(ip), port);
+                    socket.send(responsePacket);
+                    System.out.println("📤 [SENT] R-response to " + sender);
 
                 } else {
                     System.out.println("❓ [ERROR] Unknown message type: " + type);
